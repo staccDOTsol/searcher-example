@@ -7,7 +7,7 @@ use amm::raydium::pools::calculate_pool_swap_price;
 
 use num_traits::ToPrimitive;
 use solana_account_decoder::{UiAccountData, UiAccountEncoding};
-use futures::Future;
+use futures::{stream::{FuturesOrdered, FuturesUnordered}, Future, StreamExt};
 use std::{
     borrow::BorrowMut, collections::{hash_map::Entry, HashMap, HashSet}, path::PathBuf, result, str::FromStr, sync::Arc, time::{Duration, Instant}
 };
@@ -860,7 +860,30 @@ fn main() -> Result<()> {
                 bundle_results_sender,
             ));
         }
+        let rpc_client = RpcClient::new(args.rpc_url.clone());
+let mut futures = FuturesOrdered::new();
+for account_key in RAYDIUM_KEYS_SET.iter() {
 
+        futures.push_back(calculate_plain_old_pool_swap_price(&rpc_client, account_key.to_string()));
+
+}
+let mut index = 0;
+while let Some(result) = futures.next().await {
+        let account_key = RAYDIUM_KEYS_SET.iter().nth(index).unwrap();
+        index += 1;
+    let swap_price_after = result.unwrap();
+        println !("plain_old_pool_swap_price {:?}", swap_price_after);
+        if tokens.contains(&Token { name: swap_price_after.3.to_string() }) {
+            tokens.insert(Token { name: swap_price_after.3.to_string() });
+        }
+        if tokens.contains(&Token { name: swap_price_after.4.to_string() }) {
+            tokens.insert(Token { name: swap_price_after.4.to_string() });
+        }
+        graph.add_token(Token { name: swap_price_after.3.to_string() });
+        graph.add_token(Token { name: swap_price_after.4.to_string() });
+        graph.add_edge(Token { name: swap_price_after.3.to_string() }, Token { name: swap_price_after.4.to_string() }, swap_price_after.1, swap_price_after.2, 30, 10000, account_key.to_string());
+        graph.add_edge(Token { name: swap_price_after.4.to_string() }, Token { name: swap_price_after.3.to_string() }, swap_price_after.2, swap_price_after.1, 30, 10000, account_key.to_string());
+    }
         let result = run_searcher_loop(
             args.block_engine_url,
             auth_keypair,
