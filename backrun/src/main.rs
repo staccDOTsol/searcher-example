@@ -50,7 +50,7 @@ use tokio::{
 use tonic::{codegen::InterceptedService, transport::Channel, Response, Status};
 use yellowstone_grpc_proto::geyser::SubscribeUpdateBlock;
 
-use crate::{amm::raydium::pools::get_raydium_pool, event_loops::{
+use crate::{amm::raydium::pools::{calculate_plain_old_pool_swap_price, get_raydium_pool}, event_loops::{
     block_subscribe_loop, bundle_results_loop, pending_tx_loop, slot_subscribe_loop,
 }};
 use std::collections::{BinaryHeap};
@@ -107,65 +107,59 @@ impl Graph {
         }
     }
 }
+impl Graph {
+    async fn find_arbitrage_opportunities(&self, start: Token, rpc_client: &RpcClient) -> Vec<(Vec<Token>, f64)> {
+        let mut opportunities = Vec::new();
+        let mut heap = BinaryHeap::new();
 
+        // Start with a profit of 1.0 (no profit or loss)
+        heap.push(NodeProfit { token: start.clone(), profit: 1.0, path: vec![start.clone()] });
 
+        while let Some(NodeProfit { token, profit, path }) = heap.pop() {
+            if let Some(edges) = self.edges.get(&token) {
+                for edge in edges {
+                    // Dynamically calculate the profit based on the current state of the liquidity pool
+                    let swap_profit = calculate_pool_swap_price(&rpc_client, edge.pool_id.clone(), edge.base_reserve, edge.quote_reserve).await.unwrap();
+                    let next_profit = profit.to_f64().unwrap() * swap_profit.to_f64().unwrap();
+                    let mut next_path = path.clone();
+                    next_path.push(edge.to.clone());
 
-// Assuming Token, Edge, and Graph structs are defined as previously discussed
+                    // Check if the loop is closed and the profit is greater than 1
+                    if edge.to == start && next_profit > 1.0 {
+                        opportunities.push((next_path, next_profit));
+                    } else if !next_path.contains(&edge.to) {
+                        // Continue traversing only if the next token hasn't been visited yet to avoid cycles
+                        heap.push(NodeProfit { token: edge.to.clone(), profit: next_profit, path: next_path });
+                    }
+                }
+            }
+        }
+
+        opportunities
+    }
+}
 
 #[derive(Clone, PartialEq)]
 struct NodeProfit {
     token: Token,
     profit: f64,
+    path: Vec<Token>,
 }
 
-// Implement Eq to satisfy the BinaryHeap requirements
 impl Eq for NodeProfit {}
 
-// Implement Ord to ensure the BinaryHeap orders the profits correctly (max heap)
 impl Ord for NodeProfit {
     fn cmp(&self, other: &Self) -> Ordering {
         self.profit.partial_cmp(&other.profit).unwrap()
     }
 }
 
-// Implement PartialOrd to provide the necessary comparison functionality
 impl PartialOrd for NodeProfit {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Graph {
-   async fn find_most_profitable_route(&self, start: Token, rpc_client: &RpcClient) -> HashMap<Token, (Vec<Token>, f64)> {
-        let mut max_profit = HashMap::new();
-        let mut heap = BinaryHeap::new();
-
-        // Start with a profit of 1.0 (no profit or loss)
-        max_profit.insert(start.clone(), (vec![start.clone()], 1.0));
-        heap.push(NodeProfit { token: start.clone(), profit: 1.0 });
-
-        while let Some(NodeProfit { token, profit }) = heap.pop() {
-            if let Some(edges) = self.edges.get(&token) {
-                for edge in edges {
-                    // Dynamically calculate the profit based on the current state of the liquidity pool
-                    let swap_profit = calculate_pool_swap_price(&rpc_client, edge.pool_id.clone(), edge.base_reserve, edge.quote_reserve).await.unwrap();
-                    let next_profit = profit.to_f64().unwrap() * swap_profit.to_f64().unwrap();
-
-                    if next_profit > max_profit.get(&edge.to).map_or(0.0, |&(_, p)| p) {
-                        heap.push(NodeProfit { token: edge.to.clone(), profit: next_profit });
-                        let mut path = max_profit.get(&token).unwrap().0.clone();
-                        path.push(edge.to.clone());
-                        if FLASHABLE_TOKEN_SET.contains(&edge.to.name) {
-                            max_profit.insert(edge.to.clone(), (path, next_profit));
-                        }
-                    }
-                }
-            }
-        }
-
-        max_profit
-    }
-}
 
 
 #[derive(Parser, Debug)]
@@ -323,10 +317,26 @@ async fn build_bundles(
             }
             let simulation_result = simulation_result.unwrap();
             if simulation_result.value.transaction_results.len() == 0 {
+
+                
                 println!("simulation_result.value.transaction_results.len() == 0");
                 println!("simulation_result: {:?}", simulation_result);
-                continue;
+
+                let swap_price_after = calculate_plain_old_pool_swap_price(&rpc_client, account_key.to_string()).await.unwrap();
+                println !("plain_old_pool_swap_price {:?}", swap_price_after);
+                if tokens.contains(&Token { name: swap_price_after.3.to_string() }) {
+                    tokens.insert(Token { name: swap_price_after.3.to_string() });
+                }
+                if tokens.contains(&Token { name: swap_price_after.4.to_string() }) {
+                    tokens.insert(Token { name: swap_price_after.4.to_string() });
+                }
+                graph.add_token(Token { name: swap_price_after.3.to_string() });
+                graph.add_token(Token { name: swap_price_after.4.to_string() });
+                graph.add_edge(Token { name: swap_price_after.3.to_string() }, Token { name: swap_price_after.4.to_string() }, swap_price_after.1, swap_price_after.2, 30, 10000, account_key.to_string());
+                graph.add_edge(Token { name: swap_price_after.4.to_string() }, Token { name: swap_price_after.3.to_string() }, swap_price_after.2, swap_price_after.1, 30, 10000, account_key.to_string());
+
             }
+            else {
             let pre_execution_accounts = simulation_result.value.transaction_results[0].pre_execution_accounts.clone().unwrap();
             let post_execution_accounts = simulation_result.value.transaction_results[0].post_execution_accounts.clone().unwrap();
             let base_reserve = pre_execution_accounts[0].clone();
@@ -361,20 +371,20 @@ async fn build_bundles(
             let mut max_profit = 0.0;
             let mut max_profitable_route = vec![];
             for token in FLASHABLE_TOKEN_SET.iter() {
-                let most_profitable_route = graph.find_most_profitable_route(Token { name: token.to_string() }, rpc_client).await;
+                let most_profitable_route = graph.find_arbitrage_opportunities(Token { name: token.to_string() }, rpc_client).await;
 
                 println!("most_profitable_route: {:?}", most_profitable_route);
-                for (token, (route, profit)) in most_profitable_route {
+                if most_profitable_route.len() > 0 {
+                    let (route, profit) = most_profitable_route[0].clone();
                     if profit > max_profit {
                         max_profit = profit;
                         max_profitable_route = route;
                     }
-
                 }
-                println!("max_profitable_route: {:?}, profit: {:?}", max_profitable_route, max_profit);
+                println!("max_profitable_route: {:?}", max_profitable_route);
             }
-
         }
+    }
 
     }
         
@@ -771,6 +781,9 @@ async fn run_searcher_loop(
                 // it might be ideal to wait until the leader slot is up
                 if is_leader_slot {
                     let pending_tx_notification = maybe_pending_tx_notification.ok_or(BackrunError::Shutdown)?;
+                    if pending_tx_notification.server_side_ts.as_ref().unwrap().seconds < (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() - 5) as i64 {
+                        continue;
+                    }
                     let bundles = build_bundles(&rpc_client, pending_tx_notification, keypair, &blockhash, &tip_accounts, &mut rng, &message,  graph,  tokens,  seen_pool_ids).await;
                     if !bundles.is_empty() {
                         /*let now = Instant::now();

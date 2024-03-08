@@ -67,7 +67,7 @@ pub async fn block_subscribe_loop(endpoint: String, block_sender: Sender<Subscri
     .await?;
 
     let blocks_filter = SubscribeRequestFilterBlocks {
-        account_include: vec!["5quBtoiQqxF9Jv6KYKctB59NT3gtJD2Y65kdnB1Uev3h".to_string()
+        account_include: vec!["675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".to_string()
         ,"CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK".to_string(),
         "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc".to_string()
         ], // Specify accounts to include if necessary
@@ -123,7 +123,7 @@ pub async fn pending_tx_loop(
     info!("backrun pubkeys: {:?}", backrun_pubkeys);
 
     loop {
-        sleep(Duration::from_secs(1)).await;
+        sleep(Duration::from_micros(1)).await;
 
         match get_searcher_client(&block_engine_url, &auth_keypair).await {
             Ok(mut searcher_client) => {
@@ -210,9 +210,9 @@ pub async fn bundle_results_loop(endpoint: String, bundle_sender: Sender<BundleR
     // Example: Using a transactions filter for this purpose, adjust as necessary.
     let transactions_filter = SubscribeRequestFilterTransactions {
         vote: None,
-        failed: None,
+        failed: Some(true),
         signature: None,
-        account_include: vec!["5quBtoiQqxF9Jv6KYKctB59NT3gtJD2Y65kdnB1Uev3h".to_string()
+        account_include: vec!["675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".to_string()
         ,"CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK".to_string(),
         "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc".to_string()
 ], // Specify accounts to include in transaction updates

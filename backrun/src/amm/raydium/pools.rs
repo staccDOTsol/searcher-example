@@ -104,7 +104,7 @@ pub struct LiquidityPoolKeys {
     pub lp_mint: Pubkey,
     pub market_id: Pubkey,
     pub market_event_queue: Pubkey,
-    pub program_id: Pubkey,
+    pub program_id: Pubkey
     // Assume other fields as necessary
 }
 
@@ -123,6 +123,8 @@ struct PoolInfo {
     base_decimals: u8,
     quote_decimals: u8,
     lp_decimals: u8,
+    base_mint: String,
+    quote_mint: String,
     base_reserve: u64,
     quote_reserve: u64,
     lp_supply: u64,
@@ -231,7 +233,7 @@ pub async fn calculate_pool_swap_price(
         } else {
             // get raydium pool as liquidity pool keys
             let pool_keys: LiquidityPoolKeys =
-                raydium_pool.try_into().map_err(|e| SbError::CustomError {
+                raydium_pool.clone().try_into().map_err(|e| SbError::CustomError {
                     message: "Failed to convert raydium pool to liquidity pool keys".to_string(),
                     source: std::sync::Arc::new(e),
                 })?;
@@ -367,6 +369,8 @@ pub async fn calculate_pool_swap_price(
                         base_decimals,
                         quote_decimals,
                         lp_decimals,
+                        base_mint: raydium_pool.clone().base_mint.clone(),
+                        quote_mint: raydium_pool.clone().quote_mint.clone(),
                         base_reserve,
                         quote_reserve,
                         lp_supply,
@@ -396,6 +400,195 @@ pub async fn calculate_pool_swap_price(
             }
 
             Ok(current_price)
+        }
+    } else {
+        Err(SbError::CustomMessage(
+            "Failed to get raydium pool".to_string(),
+        ))
+    }
+}
+pub async fn calculate_plain_old_pool_swap_price(
+    rpc_client: &RpcClient,
+    pool: String,
+) -> Result<(Decimal, u64, u64, String, String), SbError> {
+    let raydium_pool = get_raydium_pool(&pool).await;
+    if raydium_pool.is_some() {
+        let raydium_pool = raydium_pool.unwrap();
+        let program_id = Pubkey::from_str(&raydium_pool.program_id).unwrap();
+        if raydium_pool.version == Some(5) || RAYDIUM_POOL_AMM_STABLE == program_id {
+            Err(SbError::CustomMessage(
+                "StableCurve is not enabled for Raydium Pools".to_string(),
+            ))
+        } else {
+            // get raydium pool as liquidity pool keys
+            let pool_keys: LiquidityPoolKeys =
+                raydium_pool.clone().try_into().map_err(|e| SbError::CustomError {
+                    message: "Failed to convert raydium pool to liquidity pool keys".to_string(),
+                    source: std::sync::Arc::new(e),
+                })?;
+
+            // simulate the instructions
+            let simulate_pool_info_instruction = make_simulate_pool_info_instruction(&pool_keys)?;
+            let simulate_payer_pubkey = pubkey!("RaydiumSimuLateTransaction11111111111111111");
+
+            let blockhash =
+                rpc_client
+                    .get_latest_blockhash()
+                    .await
+                    .map_err(|e| SbError::CustomError {
+                        message: "Failed to get recent blockhash".to_string(),
+                        source: std::sync::Arc::new(e),
+                    })?;
+
+            let transaction = Transaction::new_unsigned(Message::new_with_blockhash(
+                &[simulate_pool_info_instruction],
+                Some(&simulate_payer_pubkey),
+                &blockhash,
+            ));
+
+            let simulate_pool_info_result = rpc_client
+                .simulate_transaction(&transaction)
+                .await
+                .map_err(|e| SbError::CustomError {
+                    message: "Failed to simulate pool info instruction".to_string(),
+                    source: std::sync::Arc::new(e),
+                })?;
+
+            // Get the simulated pool info result
+            let logs: Vec<String> = match simulate_pool_info_result.value.logs {
+                Some(logs) => logs,
+                None => {
+                    return Err(SbError::CustomMessage(
+                        "Failed to get logs from simulate pool info result".to_string(),
+                    ));
+                }
+            };
+
+            // map the logs to the pools info
+            // filter logs that don't contain "GetPoolData"
+
+            let pools_info: Vec<PoolInfo> = logs
+                .iter()
+                .filter_map(|log| {
+                    if log.contains("GetPoolData") {
+                        Some(log)
+                    } else {
+                        None
+                    }
+                })
+                .map(|log| {
+                    let json = parse_simulate_log_to_json(log, "GetPoolData")?;
+                    let status = parse_simulate_value(&json, "status")?;
+                    let base_decimals = parse_simulate_value(&json, "coin_decimals")?;
+                    let quote_decimals = parse_simulate_value(&json, "pc_decimals")?;
+                    let lp_decimals = parse_simulate_value(&json, "lp_decimals")?;
+                    let base_reserve = parse_simulate_value(&json, "pool_coin_amount")?;
+                    let quote_reserve = parse_simulate_value(&json, "pool_pc_amount")?;
+                    let lp_supply = parse_simulate_value(&json, "pool_lp_supply")?;
+                    let start_time = parse_simulate_value(&json, "pool_open_time")?;
+
+                    // get start time as i64
+                    let start_time =
+                        start_time
+                            .parse::<i64>()
+                            .map_err(|e| SbError::CustomError {
+                                message: "Failed to parse start time".to_string(),
+                                source: std::sync::Arc::new(e),
+                            })?;
+
+                    // get status as u64
+                    let status = status.parse::<u64>().map_err(|e| SbError::CustomError {
+                        message: "Failed to parse status".to_string(),
+                        source: std::sync::Arc::new(e),
+                    })?;
+
+                    // get base decimals as u8
+                    let base_decimals =
+                        base_decimals
+                            .parse::<u8>()
+                            .map_err(|e| SbError::CustomError {
+                                message: "Failed to parse base decimals".to_string(),
+                                source: std::sync::Arc::new(e),
+                            })?;
+
+                    // get quote decimals as u8
+                    let quote_decimals =
+                        quote_decimals
+                            .parse::<u8>()
+                            .map_err(|e| SbError::CustomError {
+                                message: "Failed to parse quote decimals".to_string(),
+                                source: std::sync::Arc::new(e),
+                            })?;
+
+                    // get lp decimals as u8
+                    let lp_decimals =
+                        lp_decimals
+                            .parse::<u8>()
+                            .map_err(|e| SbError::CustomError {
+                                message: "Failed to parse lp decimals".to_string(),
+                                source: std::sync::Arc::new(e),
+                            })?;
+
+                    // get base reserve as u64
+                    let base_reserve =
+                        base_reserve
+                            .parse::<u64>()
+                            .map_err(|e| SbError::CustomError {
+                                message: "Failed to parse base reserve".to_string(),
+                                source: std::sync::Arc::new(e),
+                            })?;
+
+                    // get quote reserve as u64
+                    let quote_reserve =
+                        quote_reserve
+                            .parse::<u64>()
+                            .map_err(|e| SbError::CustomError {
+                                message: "Failed to parse quote reserve".to_string(),
+                                source: std::sync::Arc::new(e),
+                            })?;
+                    
+                    // get lp supply as u64
+                    let lp_supply = lp_supply.parse::<u64>().map_err(|e| SbError::CustomError {
+                        message: "Failed to parse lp supply".to_string(),
+                        source: std::sync::Arc::new(e),
+                    })?;
+
+                    Ok(PoolInfo {
+                        status,
+                        base_decimals,
+                        quote_decimals,
+                        lp_decimals,
+                        base_mint: raydium_pool.clone().base_mint.clone(),
+                        quote_mint: raydium_pool.clone().quote_mint.clone(),
+                        base_reserve,
+                        quote_reserve,
+                        lp_supply,
+                        start_time,
+                    })
+                })
+                .collect::<Result<Vec<PoolInfo>, SbError>>()?;
+
+            // ensure there's only 1 pool info
+            if pools_info.len() != 1 {
+                return Err(SbError::CustomMessage(
+                    "Failed to get pool info".to_string(),
+                ));
+            }
+
+            // get the pool info for the first pool (the only one we're fetching data for)
+            let pool_info = pools_info[0].clone();
+
+            // compute amount out
+            let (current_price, _) = compute_amount_out(pool_keys, pool_info)?;
+
+            // check that current price is not zero
+            if current_price.is_zero() {
+                return Err(SbError::CustomMessage(
+                    "Failed to calculate current price".to_string(),
+                ));
+            }
+
+            Ok((current_price, pools_info[0].base_reserve, pools_info[0].quote_reserve, pools_info[0].base_mint.clone(), pools_info[0].quote_mint.clone()))
         }
     } else {
         Err(SbError::CustomMessage(
