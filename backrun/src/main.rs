@@ -4,8 +4,12 @@ use amm::raydium::pools::calculate_pool_swap_price;
 //use amm::raydium::clmm::calculate_clmm_swap_price;
 //use amm::orca::calculate_swap_price;
 //use amm::orca::legacy_pools::get_legacy_pool;'
-
+use anyhow::anyhow;
+mod serde_helpers;
+use serde_helpers::field_as_string;
 use num_traits::ToPrimitive;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use solana_account_decoder::{UiAccountData, UiAccountEncoding};
 use futures::{stream::{FuturesOrdered, FuturesUnordered}, Future, StreamExt};
 use std::{
@@ -38,7 +42,7 @@ use solana_client::{
 };
 use solana_metrics::{datapoint_info, set_host_id};
 use solana_sdk::{
-    bundle::VersionedBundle, clock::Slot, commitment_config::{CommitmentConfig, CommitmentLevel}, hash::Hash, pubkey::Pubkey, signature::{read_keypair_file, Keypair, Signature, Signer}, system_instruction::transfer, transaction::{Transaction, VersionedTransaction}
+    bundle::VersionedBundle, clock::Slot, commitment_config::{CommitmentConfig, CommitmentLevel}, hash::Hash, instruction::Instruction, pubkey::Pubkey, signature::{read_keypair_file, Keypair, Signature, Signer}, system_instruction::transfer, transaction::{Transaction, VersionedTransaction}
 };
 use spl_memo::{build_memo, solana_program::program_pack::Pack};
 use thiserror::Error;
@@ -161,6 +165,137 @@ impl PartialOrd for NodeProfit {
 }
 
 
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct HashedAccount{
+
+    pub is_signer: bool,
+    pub is_writable: bool,
+    pub pubkey: String,
+}
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct HashedIx{
+    pub program_id: String,
+    pub accounts: Vec<HashedAccount>,
+    pub data: String
+}
+
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformFee {
+    #[serde(with = "field_as_string")]
+    pub amount: u64,
+    pub fee_bps: u8,
+}
+
+#[derive(Serialize, Deserialize, Default, PartialEq, Clone, Debug)]
+pub enum SwapMode {
+    #[default]
+    ExactIn,
+    ExactOut,
+}
+
+impl FromStr for SwapMode {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "ExactIn" => Ok(Self::ExactIn),
+            "ExactOut" => Ok(Self::ExactOut),
+            _ => Err(anyhow!("{} is not a valid SwapMode", s)),
+        }
+    }
+}
+/// Topologically sorted DAG with additional metadata for rendering
+pub type RoutePlanWithMetadata = Vec<RoutePlanStep>;
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutePlanStep {
+    pub swap_info: SwapInfo,
+    pub percent: u8,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SwapInfo {
+    #[serde(with = "field_as_string")]
+    pub amm_key: Pubkey,
+    pub label: String,
+    #[serde(with = "field_as_string")]
+    pub input_mint: Pubkey,
+    #[serde(with = "field_as_string")]
+    pub output_mint: Pubkey,
+    /// An estimation of the input amount into the AMM
+    #[serde(with = "field_as_string")]
+    pub in_amount: u64,
+    /// An estimation of the output amount into the AMM
+    #[serde(with = "field_as_string")]
+    pub out_amount: u64,
+    #[serde(with = "field_as_string")]
+    pub fee_amount: u64,
+    #[serde(with = "field_as_string")]
+    pub fee_mint: Pubkey,
+}
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct QuoteResponse {
+    #[serde(with = "field_as_string")]
+    pub input_mint: Pubkey,
+    #[serde(with = "field_as_string")]
+    pub in_amount: u64,
+    #[serde(with = "field_as_string")]
+    pub output_mint: Pubkey,
+    #[serde(with = "field_as_string")]
+    pub out_amount: u64,
+    /// Not used by build transaction
+    #[serde(with = "field_as_string")]
+    pub other_amount_threshold: u64,
+    pub swap_mode: SwapMode,
+    pub slippage_bps: u16,
+    pub platform_fee: Option<PlatformFee>,
+    pub price_impact_pct: String,
+    pub route_plan: RoutePlanWithMetadata,
+    #[serde(default)]
+    pub context_slot: u64,
+    #[serde(default)]
+    pub time_taken: f64,
+}
+impl Default for QuoteResponse {
+    fn default() -> Self {
+        Self {
+            input_mint: Pubkey::default(),
+            in_amount: 0,
+            output_mint: Pubkey::default(),
+            out_amount: 0,
+            other_amount_threshold: 0,
+            swap_mode: SwapMode::ExactIn,
+            slippage_bps: 0,
+            platform_fee: None,
+            price_impact_pct: "0".to_string(),
+            route_plan: vec![],
+            context_slot: 0,
+            time_taken: 0.0,
+        }
+    }
+}
+impl QuoteResponse {
+    pub async fn try_from_response(response: reqwest::Response) -> anyhow::Result<Self, anyhow::Error> {
+        Ok(response.json::<QuoteResponse>().await.unwrap_or_default())
+    }
+}
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SwapInstructions{
+    //"swapInstruction\":{\"programId\":\"JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4\",\"accounts\":[{\"
+    pub token_ledger_instruction: Option<HashedIx>,
+    pub setup_instructions:Option<Vec<HashedIx>>,
+    pub swap_instruction: HashedIx,
+    pub cleanup_instruction: Option<HashedIx>,
+    pub address_lookup_table_addresses: Vec<String>
+}
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -232,8 +367,7 @@ enum BackrunError {
 
 #[derive(Clone)]
 struct BundledTransactions {
-    mempool_txs: Vec<VersionedTransaction>,
-    backrun_txs: Vec<VersionedTransaction>,
+    txs: Vec<VersionedTransaction>,
 }
 
 #[derive(Default)]
@@ -255,6 +389,99 @@ lazy_static! {
         let raydium_keys: Vec<String> = serde_json::from_str(&raydium_keys).unwrap();
         raydium_keys.into_iter().collect::<HashSet<String>>()
     };
+}
+fn calculate_ideal_trade_sizes(
+    max_quote_currency: f64,
+    p_initial: f64,
+    p_final: f64,
+    delta: f64,
+    trade_cost_percentage: f64,
+) -> (f64, f64) {
+    // Ensure p_initial and p_final are not too small to avoid division overflow
+    if p_initial.abs() < 1e-30 || p_final.abs() < 1e-30 {
+        return (0.0, 0.0); // Avoid calculations that might lead to overflow
+    }
+    if delta < 1.0 {
+        let break_even_delta = 1.0 - trade_cost_percentage*2.0;
+        let break_even_price = p_initial * break_even_delta;
+        if p_final < break_even_price {
+            // Price decreased, strategy might involve buying the base currency at the lower price
+            let base_currency_acquired = max_quote_currency / p_final; // Acquire more base currency after price drop
+            let total_trade_cost = max_quote_currency * trade_cost_percentage; // Only buying involved, so single trade cost
+            let net_quote_currency = max_quote_currency - total_trade_cost;
+
+            // Check if the operation is profitable or feasible
+            if base_currency_acquired * p_final > net_quote_currency {
+                (net_quote_currency, base_currency_acquired)
+            } else {
+                (0.0, 0.0) // Not profitable or feasible
+            }
+        } else {
+            // Price increased, strategy might involve selling base currency at the higher price
+            let base_currency_sold = max_quote_currency * p_final; // Sell base currency at the higher price
+            let total_trade_cost = max_quote_currency * trade_cost_percentage; // Only selling involved, so single trade cost
+            let net_quote_currency = max_quote_currency - total_trade_cost;
+
+            // Check if the operation is profitable or feasible
+            if base_currency_sold > net_quote_currency {
+                (net_quote_currency, base_currency_sold)
+            } else {
+                (0.0, 0.0) // Not profitable or feasible
+            }
+            
+                    }
+
+                }
+                    else {
+                        let break_even_delta = 1.0 + trade_cost_percentage*2.0;
+                        let break_even_price = p_initial * break_even_delta;
+                        if p_final > break_even_price {
+                            // Price increased, strategy might involve buying the base currency at the higher price
+                            let base_currency_acquired = max_quote_currency / p_final; // Acquire more base currency after price increase
+                            let total_trade_cost = max_quote_currency * trade_cost_percentage; // Only buying involved, so single trade cost
+                            let net_quote_currency = max_quote_currency - total_trade_cost;
+
+                            // Check if the operation is profitable or feasible
+                            if base_currency_acquired * p_final > net_quote_currency {
+                                (net_quote_currency, base_currency_acquired)
+                            } else {
+                                (0.0, 0.0) // Not profitable or feasible
+                            }
+                        } else {
+                            // Price decreased, strategy might involve selling base currency at the lower price
+                            let base_currency_sold = max_quote_currency * p_final; // Sell base currency at the lower price
+                            let total_trade_cost = max_quote_currency * trade_cost_percentage; // Only selling involved, so single trade cost
+                            let net_quote_currency = max_quote_currency - total_trade_cost;
+
+                            // Check if the operation is profitable or feasible
+                            if base_currency_sold > net_quote_currency {
+                                (net_quote_currency, base_currency_sold)
+                            } else {
+                                (0.0, 0.0) // Not profitable or feasible
+                            }
+                        }
+                    }
+
+            }
+fn deserialize_instruction (instruction: HashedIx) -> Instruction {
+    let mut accounts = instruction.accounts.clone();
+    for i in 0..accounts.len() {
+        accounts[i].pubkey = Pubkey::from_str(&accounts[i].pubkey).unwrap().to_string();
+    }
+    let data = base64::decode(&instruction.data).unwrap();
+    let program_id = Pubkey::from_str(&instruction.program_id).unwrap();
+    let instruction = Instruction {
+        program_id,
+        accounts: accounts.iter().map(|account| {
+            solana_sdk::instruction::AccountMeta {
+                pubkey: Pubkey::from_str(&account.pubkey).unwrap(),
+                is_signer: account.is_signer,
+                is_writable: account.is_writable,
+            }
+        }).collect::<Vec<solana_sdk::instruction::AccountMeta>>(),
+        data,
+    };
+    instruction
 }
 async fn build_bundles(
     rpc_client: &RpcClient,
@@ -319,11 +546,7 @@ async fn build_bundles(
             if simulation_result.value.transaction_results.len() == 0 {
 
                 
-                println!("simulation_result.value.transaction_results.len() == 0");
-                println!("simulation_result: {:?}", simulation_result);
-
-                let swap_price_after = calculate_plain_old_pool_swap_price(&rpc_client, account_key.to_string()).await.unwrap();
-                println !("plain_old_pool_swap_price {:?}", swap_price_after);
+                println!("simulation_result.value.transaction_results.len() == 0");/*
                 if tokens.contains(&Token { name: swap_price_after.3.to_string() }) {
                     tokens.insert(Token { name: swap_price_after.3.to_string() });
                 }
@@ -334,7 +557,7 @@ async fn build_bundles(
                 graph.add_token(Token { name: swap_price_after.4.to_string() });
                 graph.add_edge(Token { name: swap_price_after.3.to_string() }, Token { name: swap_price_after.4.to_string() }, swap_price_after.1, swap_price_after.2, 30, 10000, account_key.to_string());
                 graph.add_edge(Token { name: swap_price_after.4.to_string() }, Token { name: swap_price_after.3.to_string() }, swap_price_after.2, swap_price_after.1, 30, 10000, account_key.to_string());
-
+                */
             }
             else {
             let pre_execution_accounts = simulation_result.value.transaction_results[0].pre_execution_accounts.clone().unwrap();
@@ -355,9 +578,284 @@ async fn build_bundles(
             
             let swap_price_before = calculate_pool_swap_price(&rpc_client, account_key.to_string(), base_reserve_amount.amount, quote_reserve_amount.amount).await.unwrap();
             let swap_price_after = calculate_pool_swap_price(&rpc_client, account_key.to_string(), base_reserve_post_amount.amount, quote_reserve_post_amount.amount).await.unwrap();
-            let swap_price = swap_price_before / swap_price_after;
-            println !("swap price before  {:?}, after  {:?}, delta {:?}", swap_price_before, swap_price_after, swap_price);
-            if tokens.contains(&Token { name: base_reserve_amount.mint.to_string() }) {
+            let to_report_base ;
+            if base_reserve_post_amount.amount > base_reserve_amount.amount {
+                to_report_base = base_reserve_post_amount.amount - base_reserve_amount.amount;
+            }
+            else {
+                to_report_base = base_reserve_amount.amount - base_reserve_post_amount.amount;
+            }
+            let to_report_quote;
+            if quote_reserve_post_amount.amount > quote_reserve_amount.amount {
+                to_report_quote = quote_reserve_post_amount.amount - quote_reserve_amount.amount;
+            }
+            else {
+                to_report_quote = quote_reserve_amount.amount - quote_reserve_post_amount.amount;
+            }
+            let swap_price = swap_price_after / swap_price_before;
+            println !("swap price before {:?}, after {:?}, delta {:?}, base amount diff {:?}, quote amount diff {:?}", swap_price_before, swap_price_after, swap_price, to_report_base, to_report_quote);
+            let max_quote_currency = to_report_quote as f64 / 2.0;
+            let p_initial = swap_price_before; // Initial price before the swap
+            let p_final = swap_price_after; // Final price after the swap
+            let delta = (swap_price_after - swap_price_before) / swap_price_before; // Percentage change, not ratio
+            let trade_cost_percentage = 0.0025; // 25 bps
+        
+            let (ideal_quote_size, ideal_base_size) = calculate_ideal_trade_sizes(
+                max_quote_currency.to_f64().unwrap(),
+                p_initial.to_f64().unwrap(),
+                p_final.to_f64().unwrap(),
+                delta.to_f64().unwrap(),
+                trade_cost_percentage,
+            );
+        
+                
+            println!("Ideal Quote Size: {}", ideal_quote_size);
+            println!("Ideal Base Size: {}", ideal_base_size);
+            let mut quote= Value::default();
+            let mut quote0=     Value::default();
+            let mut quote2= Value::default();
+            let mut go = false;
+            if ideal_quote_size > 0.0 && ideal_base_size > 0.0 {
+               let ideal_quote_size = ideal_quote_size as u64;
+               let ideal_base_size = ideal_base_size as u64;
+                if swap_price.to_f64().unwrap() > 1.0 {
+
+                    // buy quote, sell base 
+                let url = "http://127.0.0.1:8080/quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
+                .to_owned()
+                +&"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string()+"&outputMint="
+                +&base_reserve_amount.mint.to_string()+"&amount="
+                +&ideal_base_size.to_string()
+                +&"&swapMode=ExactOut";
+                let quote00= &reqwest::get(url.clone()).await.unwrap().text().await.unwrap();
+                 quote0 = serde_json::from_str::<serde_json::Value>(quote00).unwrap();
+                let input_amount = quote0["outAmount"].to_string();
+                let input_amount = input_amount[1..input_amount.len()-1].parse::<f64>().unwrap_or_default();
+
+                let url = "http://127.0.0.1:8080/quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
+                .to_owned()
+                +&base_reserve_amount.mint.to_string()+"&outputMint="
+                +&quote_reserve_amount.mint.to_string()+"&amount="
+                +&input_amount.to_string()
+                +&"&swapMode=ExactIn&"
+                +&"dexes=Raydium";
+                let quote11= &reqwest::get(url.clone()).await.unwrap().text().await.unwrap();
+                 quote = serde_json::from_str::<serde_json::Value>(quote11).unwrap();
+                let output_amount = quote["outAmount"].to_string();
+                let output_amount = output_amount[1..output_amount.len()-1].parse::<f64>().unwrap_or_default();
+                
+                if let Some(route_plan) = quote["routePlan"].as_array() {
+                    let filtered_route_plan: Vec<Value> = route_plan.iter()
+                        .filter(|swap| {
+                            if let Some(amm_key) = swap["swapInfo"]["ammKey"].as_str() {
+                                amm_key == account_key.to_string()
+                            } else {
+                                false
+                            }
+                        })
+                        // deref
+                        .cloned()
+                        .collect();
+
+                    quote["routePlan"] = serde_json::Value::Array(filtered_route_plan.clone());
+
+                    // Now filtered_route_plan contains only the swap info with ammKey matching account_key
+                    println!("Filtered Route Plan: {:?}", filtered_route_plan);
+
+
+                let url = "http://127.0.0.1:8080/quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
+                .to_owned()
+                +&quote_reserve_amount.mint.to_string()+"&outputMint="
+                +&base_reserve_amount.mint.to_string()+"&amount="
+                +&ideal_base_size.to_string()
+                +&"&swapMode=ExactIn&"
+                +&"dexes=Raydium";
+                let quote22= &reqwest::get(url.clone()).await.unwrap().text().await.unwrap();
+                 quote2 = serde_json::from_str::<serde_json::Value>(quote22).unwrap();
+                let output_amount = quote2["outAmount"].to_string();
+                let output_amount = output_amount[1..output_amount.len()-1].parse::<f64>().unwrap_or_default();
+                
+                if let Some(route_plan) = quote2["routePlan"].as_array() {
+                    let filtered_route_plan: Vec<Value> = route_plan.iter()
+                        .filter(|swap| {
+                            if let Some(amm_key) = swap["swapInfo"]["ammKey"].as_str() {
+                                amm_key == account_key.to_string()
+                            } else {
+                                false
+                            }
+                        })
+                        .cloned()
+                        .collect();
+
+                    quote2["routePlan"] = serde_json::Value::Array(filtered_route_plan.clone());
+
+                }
+
+                    // Now filtered_route_plan contains only the swap info with ammKey matching account_key
+                    println!("Filtered Route Plan: {:?}", filtered_route_plan);
+
+            }
+            go = true;
+        }
+        else {
+            // sell quote, buy base
+            let url = "http://127.0.0.1:8080/quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
+            .to_owned()
+            +&"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string()+"&outputMint="
+            +&quote_reserve_amount.mint.to_string()+"&amount="
+            +&ideal_quote_size.to_string()
+            +&"&swapMode=ExactIn";
+            let quote00= &reqwest::get(url.clone()).await.unwrap().text().await.unwrap();
+             quote0 = serde_json::from_str::<serde_json::Value>(quote00).unwrap();
+            let input_amount = quote0["outAmount"].to_string();
+            let input_amount = input_amount[1..input_amount.len()-1].parse::<f64>().unwrap_or_default();
+
+            let url = "http://127.0.0.1:8080/quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
+            .to_owned()
+            +&quote_reserve_amount.mint.to_string()+"&outputMint="
+            +&base_reserve_amount.mint.to_string()+"&amount="
+            +&input_amount.to_string()
+            +&"&swapMode=ExactOut&"
+            +&"dexes=Raydium";
+            let quote11= &reqwest::get(url.clone()).await.unwrap().text().await.unwrap();
+             quote = serde_json::from_str::<serde_json::Value>(quote11).unwrap();
+            let output_amount = quote["outAmount"].to_string();
+            let output_amount = output_amount[1..output_amount.len()-1].parse::<f64>().unwrap_or_default();
+            
+            if let Some(route_plan) = quote["routePlan"].as_array() {
+                let filtered_route_plan: Vec<Value> = route_plan.iter()
+                    .filter(|swap| {
+                        if let Some(amm_key) = swap["swapInfo"]["ammKey"].as_str() {
+                            amm_key == account_key.to_string()
+                        } else {
+                            false
+                        }
+                    })
+                    .cloned()
+                    .collect();
+
+                quote["routePlan"] = serde_json::Value::Array(filtered_route_plan.clone());
+
+            }
+
+            let url = "http://127.0.0.1:8080/quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
+            .to_owned()
+            +&base_reserve_amount.mint.to_string()+"&outputMint="
+            +&quote_reserve_amount.mint.to_string()+"&amount="
+            +&ideal_quote_size.to_string()
+            +&"&swapMode=ExactOut&"
+            +&"dexes=Raydium";
+            let quote22= &reqwest::get(url.clone()).await.unwrap().text().await.unwrap();
+             quote2 = serde_json::from_str::<serde_json::Value>(quote22).unwrap();
+            let output_amount = quote2["outAmount"].to_string();
+            let output_amount = output_amount[1..output_amount.len()-1].parse::<f64>().unwrap_or_default();
+            
+            if let Some(route_plan) = quote2["routePlan"].as_array() {
+                let filtered_route_plan: Vec<Value> = route_plan.iter()
+                    .filter(|swap| {
+                        if let Some(amm_key) = swap["swapInfo"]["ammKey"].as_str() {
+                            amm_key == account_key.to_string()
+                        } else {
+                            false
+                        }
+                    })
+                    .cloned()
+                    .collect();
+
+                quote2["routePlan"] = serde_json::Value::Array(filtered_route_plan.clone());
+go = true;
+            }
+        }
+            }
+let mut txs: Vec<VersionedTransaction> = vec![];
+let mut index = 0;
+if go {
+for swap in vec![quote0, quote, quote2].iter() {
+    let mut blockhash = rpc_client
+    .get_latest_blockhash_with_commitment(CommitmentConfig {
+        commitment: CommitmentLevel::Finalized,
+    })
+    .await.unwrap()
+    .0;
+  
+    index += 1;
+    if index == 2 {
+        txs.append(&mut vec![mempool_tx.clone()]);
+    }
+    let reqclient = reqwest::Client::new();
+    println!("swap: {:?}", swap);
+    let request_body: reqwest::Body = reqwest::Body::from(serde_json::json!({
+        "quoteResponse": swap,
+        "userPublicKey": "7ihN8QaTfNoDTRTQGULCzbUT3PHwPDTu5Brcu4iT2paP".to_string(),
+        "restrictIntermediateTokens": false,
+        "useSharedAccounts": true,
+        "useTokenLedger": false,
+        "asLegacyTransaction": false,
+        "wrapAndUnwrapSol": false,
+    }).to_string());
+    let swap_transaction = reqclient.post("http://127.0.0.1:8080/swap-instructions")
+    .body(request_body
+    ).send().await.unwrap().json::<SwapInstructions>().await;
+    if swap_transaction.is_err() {
+        println!("swap_transaction error: {:?}", swap_transaction);
+        continue;
+    }
+    let swap_transaction = swap_transaction.unwrap();
+
+    if swap_transaction.setup_instructions.is_some() {
+
+        let maybe_setup_ixs = swap_transaction.setup_instructions.clone().unwrap().iter().map(|instruction| {
+            deserialize_instruction(instruction.clone())
+        }).collect::<Vec<Instruction>>();
+
+        txs.push(VersionedTransaction::from(Transaction::new_signed_with_payer(
+            &maybe_setup_ixs,
+            Some(&keypair.pubkey()),
+            &[keypair],
+            blockhash,
+        )));
+    }
+    let maybe_swap_ix = deserialize_instruction(swap_transaction.swap_instruction.clone());
+    txs.push(VersionedTransaction::from(Transaction::new_signed_with_payer(
+        &[maybe_swap_ix],
+        Some(&keypair.pubkey()),
+        &[keypair],
+        blockhash,
+    )));
+    if swap_transaction.cleanup_instruction.is_some() {
+        let maybe_cleanup_ix = deserialize_instruction(swap_transaction.cleanup_instruction.clone().unwrap());
+        txs.push(VersionedTransaction::from(Transaction::new_signed_with_payer(
+            &[maybe_cleanup_ix],
+            Some(&keypair.pubkey()),
+            &[keypair],
+            blockhash,
+        )));
+    }
+
+}
+
+let mut blockhash = rpc_client
+        .get_latest_blockhash_with_commitment(CommitmentConfig {
+            commitment: CommitmentLevel::Finalized,
+        })
+        .await.unwrap()
+        .0;
+let tip_account = tip_accounts[rng.gen_range(0..tip_accounts.len())];
+
+let backrun_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+    &[
+       
+        transfer(&keypair.pubkey(), &tip_account, 100_000),
+    ],
+    Some(&keypair.pubkey()),
+    &[keypair],
+    blockhash,
+));
+txs.append(&mut vec![backrun_tx]);
+bundles.append(&mut vec![BundledTransactions {
+    txs: txs.clone() }]);
+}
+            /*if tokens.contains(&Token { name: base_reserve_amount.mint.to_string() }) {
                 tokens.insert(Token { name: base_reserve_amount.mint.to_string() });
             }
             if tokens.contains(&Token { name: quote_reserve_amount.mint.to_string() }) {
@@ -382,32 +880,12 @@ async fn build_bundles(
                     }
                 }
                 println!("max_profitable_route: {:?}", max_profitable_route);
-            }
+            }*/
         }
     }
 
     }
         
-            let tip_account = tip_accounts[rng.gen_range(0..tip_accounts.len())];
-
-            let backrun_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
-                &[
-                    /*build_memo(
-                        format!("{}: {:?}", message, mempool_tx.signatures[0].to_string())
-                            .as_bytes(),
-                        &[],
-                    ),
-                    transfer(&keypair.pubkey(), &tip_account, 10_000),
-                */],
-                Some(&keypair.pubkey()),
-                &[keypair],
-                *blockhash,
-            ));
-            let bundled_txs = BundledTransactions {
-                mempool_txs: vec![mempool_tx],
-                backrun_txs: vec![backrun_tx],
-            };
-            bundles.append(&mut vec![bundled_txs]);
         }
         bundles
 }
@@ -418,13 +896,14 @@ async fn send_bundles(
 ) -> Result<Vec<result::Result<Response<SendBundleResponse>, Status>>> {
     let mut futs = Vec::with_capacity(bundles.len());
     for b in bundles {
+        println!("sending bundle {:?} to searcher", b.txs);
         let mut searcher_client = searcher_client.clone();
         let txs = b
-            .mempool_txs
-            .clone()
-            .into_iter()
-            .chain(b.backrun_txs.clone().into_iter())
+            .txs
+            .iter()
+            .map(|tx| tx.clone().into())
             .collect::<Vec<VersionedTransaction>>();
+        
         let task =
             tokio::spawn(async move { send_bundle_no_wait(&txs, &mut searcher_client).await });
         futs.push(task);
@@ -604,9 +1083,9 @@ fn print_block_stats(
                             .filter(|(_, send_response)| send_response.is_ok())
                             .filter_map(|(bundle_sent, _)| {
                                 if bundle_sent
-                                    .backrun_txs
+                                    .txs
                                     .iter()
-                                    .chain(bundle_sent.mempool_txs.iter())
+
                                     .all(|tx| block_signatures.contains(&tx.signatures[0]))
                                 {
                                     Some((*slot, bundle_sent))
@@ -626,13 +1105,10 @@ fn print_block_stats(
                                 .filter(|(_, send_response)| send_response.is_ok())
                                 .filter_map(|(bundle_sent, _)| {
                                     if bundle_sent
-                                        .mempool_txs
+                                        .txs
                                         .iter()
                                         .any(|tx| block_signatures.contains(&tx.signatures[0]))
-                                        && !bundle_sent
-                                            .backrun_txs
-                                            .iter()
-                                            .any(|tx| block_signatures.contains(&tx.signatures[0]))
+
                                     {
                                         Some((*slot, bundle_sent))
                                     } else {
@@ -696,7 +1172,7 @@ fn print_block_stats(
                             .iter()
                             .filter(|(bundle, _)| {
                                 bundle
-                                    .mempool_txs
+                                    .txs
                                     .iter()
                                     .any(|tx| block_signatures.contains(&tx.signatures[0]))
                             })
@@ -766,27 +1242,36 @@ async fn run_searcher_loop(
     let mut highest_slot = 0;
     let mut is_leader_slot = false;
 
-    let mut tick = interval(Duration::from_secs(5));
+    let mut tick = interval(Duration::from_secs(59));
     loop {
         tokio::select! {
             _ = tick.tick() => {
                 maintenance_tick(&mut searcher_client, &rpc_client, &mut leader_schedule, &mut blockhash, regions.clone()).await?;
             }
+
             maybe_bundle_result = bundle_results_receiver.recv() => {
                 let bundle_result: BundleResult = maybe_bundle_result.ok_or(BackrunError::Shutdown)?;
-              //  info!("received bundle_result: [bundle_id={:?}, result={:?}]", bundle_result.bundle_id, bundle_result.result);
+                if bundle_result.result.is_none() {
+                    continue;
+                }
+                info!("received bundle_result: [bundle_id={:?}, result={:?}]", bundle_result.bundle_id, bundle_result.result);
             }
             maybe_pending_tx_notification = pending_tx_receiver.recv() => {
                 // block engine starts forwarding a few slots early, for super high activity accounts
                 // it might be ideal to wait until the leader slot is up
                 if is_leader_slot {
-                    let pending_tx_notification = maybe_pending_tx_notification.ok_or(BackrunError::Shutdown)?;
+                    if maybe_pending_tx_notification.is_none() {
+                        continue;
+                    }
+                    let pending_tx_notification = maybe_pending_tx_notification.unwrap();
                     if pending_tx_notification.server_side_ts.as_ref().unwrap().seconds < (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() - 5) as i64 {
                         continue;
                     }
                     let bundles = build_bundles(&rpc_client, pending_tx_notification, keypair, &blockhash, &tip_accounts, &mut rng, &message,  graph,  tokens,  seen_pool_ids).await;
                     if !bundles.is_empty() {
-                        /*let now = Instant::now();
+                        println!("sending bundles: {:?}", bundles.len());
+
+                        let now = Instant::now();
                         let results = send_bundles(&mut searcher_client, &bundles).await?;
                         let send_elapsed = now.elapsed().as_micros() as u64;
                         let send_rt_pp_us = send_elapsed / bundles.len() as u64;
@@ -807,17 +1292,13 @@ async fn run_searcher_loop(
                                     send_rt_per_packet
                                 });
                             }
-                        }*/
+                        }
                     }
                 }
             }
             maybe_slot = slot_receiver.recv() => {
                 highest_slot = maybe_slot.ok_or(BackrunError::Shutdown)?;
                 is_leader_slot = leader_schedule.iter().any(|(_, slots)| slots.contains(&highest_slot));
-            }
-            maybe_block = block_receiver.recv() => {
-                let block = maybe_block.ok_or(BackrunError::Shutdown)?;
-                print_block_stats(&mut block_stats, block, &leader_schedule, &mut block_signatures);
             }
         }
     }
@@ -849,7 +1330,7 @@ fn main() -> Result<()> {
             args.block_engine_url.clone(),
             auth_keypair.clone(),
             pending_tx_sender,
-            vec![Pubkey::from_str(&"5quBtoiQqxF9Jv6KYKctB59NT3gtJD2Y65kdnB1Uev3h").unwrap()
+            vec![Pubkey::from_str(&"675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8").unwrap()
         ,Pubkey::from_str(&"CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK").unwrap(),
         Pubkey::from_str(&"whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc").unwrap()],
         ));
@@ -860,7 +1341,8 @@ fn main() -> Result<()> {
                 bundle_results_sender,
             ));
         }
-        let rpc_client = RpcClient::new(args.rpc_url.clone());
+        /*let rpc_client = RpcClient::new(args.rpc_url.clone());
+        
 let mut futures = FuturesOrdered::new();
 for account_key in RAYDIUM_KEYS_SET.iter() {
 
@@ -871,6 +1353,11 @@ let mut index = 0;
 while let Some(result) = futures.next().await {
         let account_key = RAYDIUM_KEYS_SET.iter().nth(index).unwrap();
         index += 1;
+        if result.is_err() {
+            println!("result error: {:?}", result);
+            continue;
+        }
+
     let swap_price_after = result.unwrap();
         println !("plain_old_pool_swap_price {:?}", swap_price_after);
         if tokens.contains(&Token { name: swap_price_after.3.to_string() }) {
@@ -883,7 +1370,7 @@ while let Some(result) = futures.next().await {
         graph.add_token(Token { name: swap_price_after.4.to_string() });
         graph.add_edge(Token { name: swap_price_after.3.to_string() }, Token { name: swap_price_after.4.to_string() }, swap_price_after.1, swap_price_after.2, 30, 10000, account_key.to_string());
         graph.add_edge(Token { name: swap_price_after.4.to_string() }, Token { name: swap_price_after.3.to_string() }, swap_price_after.2, swap_price_after.1, 30, 10000, account_key.to_string());
-    }
+    }*/
         let result = run_searcher_loop(
             args.block_engine_url,
             auth_keypair,
