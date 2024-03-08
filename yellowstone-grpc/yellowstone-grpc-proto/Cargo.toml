@@ -1,0 +1,26 @@
+[package]
+name = "yellowstone-grpc-proto"
+version = "1.13.0+solana.1.17.20"
+authors = { workspace = true }
+edition = { workspace = true }
+description = "Yellowstone gRPC Geyser Protobuf Definitions"
+homepage = { workspace = true }
+repository = { workspace = true }
+license = "Apache-2.0"
+keywords = { workspace = true }
+publish = true
+
+[dependencies]
+bincode = { workspace = true }
+prost = { workspace = true }
+solana-account-decoder = { path = "/Users/jd/jito-solana/account-decoder" }
+solana-client = { path="/Users/jd/jito-solana/client" }
+solana-metrics ={ path="/Users/jd/jito-solana/metrics" }
+solana-sdk = { path="/Users/jd/jito-solana/sdk" }
+solana-transaction-status = { path="/Users/jd/jito-solana/transaction-status" }
+tonic = { workspace = true }
+
+[build-dependencies]
+anyhow = { workspace = true }
+protobuf-src = { workspace = true }
+tonic-build = { workspace = true }
