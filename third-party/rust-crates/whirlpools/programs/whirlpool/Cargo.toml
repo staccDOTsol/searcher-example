@@ -18,7 +18,7 @@ default = []
 anchor-lang = "*"
 anchor-spl = "*"
 spl-token = {version = "*", features = ["no-entrypoint"]}
-solana-program = { path="/home/stacc/jito-solana/sdk/program" }
+solana-program = { path="/Users/jd/jito-solana/sdk/program" }
 thiserror = "1.0"
 uint = {version = "0.9.1", default-features = false}
 borsh = "=0.10.3"

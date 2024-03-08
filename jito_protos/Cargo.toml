@@ -9,8 +9,8 @@ bincode = "1.3.3"
 bytes = "1.4.0"
 prost = "0.12"
 prost-types = "0.12"
-solana-perf = { path="/home/stacc/jito-solana/perf" }
-solana-sdk = { path="/home/stacc/jito-solana/sdk" }
+solana-perf = { path="/Users/jd/jito-solana/perf" }
+solana-sdk = { path="/Users/jd/jito-solana/sdk" }
 tonic = "0.10"
 
 [build-dependencies]

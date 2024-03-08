@@ -12,14 +12,14 @@ histogram = "0.6.9"
 jito-protos = { path = "../jito_protos" }
 log = "0.4.17"
 rand = "0.8.5"
-solana-account-decoder = { path = "/home/stacc/jito-solana/account-decoder" }
+solana-account-decoder = { path = "/Users/jd/jito-solana/account-decoder" }
 
 jito-searcher-client = { path = "../searcher_client" }
-solana-client = { path="/home/stacc/jito-solana/client" }
-solana-metrics ={ path="/home/stacc/jito-solana/metrics" }
-solana-rpc-client-api ={ path="/home/stacc/jito-solana/rpc-client-api" }
-solana-sdk = { path="/home/stacc/jito-solana/sdk" }
-solana-transaction-status = { path="/home/stacc/jito-solana/transaction-status" }
+solana-client = { path="/Users/jd/jito-solana/client" }
+solana-metrics ={ path="/Users/jd/jito-solana/metrics" }
+solana-rpc-client-api ={ path="/Users/jd/jito-solana/rpc-client-api" }
+solana-sdk = { path="/Users/jd/jito-solana/sdk" }
+solana-transaction-status = { path="/Users/jd/jito-solana/transaction-status" }
 spl-memo = "3.0.1"
 thiserror = "1.0.57"
 regex = "1"
@@ -36,7 +36,7 @@ switchboard-common = { version = "0.11.0", features = [
     "client",
 ] }
 async-recursion = "1.0.5"
-solana-program = { path="/home/stacc/jito-solana/sdk/program" }
+solana-program = { path="/Users/jd/jito-solana/sdk/program" }
 spl-math = "0.2.0"
 spl-token-2022 = { version = "2.0.0", features = ["no-entrypoint"] }
 

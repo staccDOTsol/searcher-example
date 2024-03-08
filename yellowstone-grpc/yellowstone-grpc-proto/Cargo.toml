@@ -13,11 +13,11 @@ publish = true
 [dependencies]
 bincode = { workspace = true }
 prost = { workspace = true }
-solana-account-decoder = { path = "/home/stacc/jito-solana/account-decoder" }
-solana-client = { path="/home/stacc/jito-solana/client" }
-solana-metrics ={ path="/home/stacc/jito-solana/metrics" }
-solana-sdk = { path="/home/stacc/jito-solana/sdk" }
-solana-transaction-status = { path="/home/stacc/jito-solana/transaction-status" }
+solana-account-decoder = { path = "/Users/jd/jito-solana/account-decoder" }
+solana-client = { path="/Users/jd/jito-solana/client" }
+solana-metrics ={ path="/Users/jd/jito-solana/metrics" }
+solana-sdk = { path="/Users/jd/jito-solana/sdk" }
+solana-transaction-status = { path="/Users/jd/jito-solana/transaction-status" }
 tonic = { workspace = true }
 
 [build-dependencies]

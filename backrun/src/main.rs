@@ -15,6 +15,11 @@ use futures::{stream::{FuturesOrdered, FuturesUnordered}, Future, StreamExt};
 use std::{
     borrow::BorrowMut, collections::{hash_map::Entry, HashMap, HashSet}, path::PathBuf, result, str::FromStr, sync::Arc, time::{Duration, Instant}
 };
+use solana_sdk::message::v0;
+use solana_sdk::address_lookup_table::AddressLookupTableAccount;
+
+use solana_sdk::message::VersionedMessage;
+
 use solana_rpc_client_api::{
     bundles::{
         RpcBundleRequest, RpcSimulateBundleConfig, RpcSimulateBundleResult,
@@ -32,8 +37,7 @@ use jito_protos::{
     },
 };
 use jito_searcher_client::{
-    get_searcher_client, send_bundle_no_wait, token_authenticator::ClientInterceptor,
-    BlockEngineConnectionError,
+    get_searcher_client, send_bundle_no_wait, send_bundle_with_confirmation, token_authenticator::ClientInterceptor, BlockEngineConnectionError
 };
 use log::*;
 use rand::{rngs::ThreadRng, thread_rng, Rng};
@@ -51,7 +55,7 @@ use tokio::{
     sync::mpsc::{channel, Receiver},
     time::interval,
 };
-use tonic::{codegen::InterceptedService, transport::Channel, Response, Status};
+use tonic::{codegen::InterceptedService, transport::Channel, Response, Status, Streaming};
 use yellowstone_grpc_proto::geyser::SubscribeUpdateBlock;
 
 use crate::{amm::raydium::pools::{calculate_plain_old_pool_swap_price, get_raydium_pool}, event_loops::{
@@ -621,7 +625,7 @@ async fn build_bundles(
                 if swap_price.to_f64().unwrap() > 1.0 {
 
                     // buy quote, sell base 
-                let url = "http://127.0.0.1:8080/quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
+                let url = "https://quote-api.jup.ag/v6//quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
                 .to_owned()
                 +&"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string()+"&outputMint="
                 +&base_reserve_amount.mint.to_string()+"&amount="
@@ -632,7 +636,7 @@ async fn build_bundles(
                 let input_amount = quote0["outAmount"].to_string();
                 let input_amount = input_amount[1..input_amount.len()-1].parse::<f64>().unwrap_or_default();
 
-                let url = "http://127.0.0.1:8080/quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
+                let url = "https://quote-api.jup.ag/v6//quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
                 .to_owned()
                 +&base_reserve_amount.mint.to_string()+"&outputMint="
                 +&quote_reserve_amount.mint.to_string()+"&amount="
@@ -663,7 +667,7 @@ async fn build_bundles(
                     println!("Filtered Route Plan: {:?}", filtered_route_plan);
 
 
-                let url = "http://127.0.0.1:8080/quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
+                let url = "https://quote-api.jup.ag/v6//quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
                 .to_owned()
                 +&quote_reserve_amount.mint.to_string()+"&outputMint="
                 +&base_reserve_amount.mint.to_string()+"&amount="
@@ -699,7 +703,7 @@ async fn build_bundles(
         }
         else {
             // sell quote, buy base
-            let url = "http://127.0.0.1:8080/quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
+            let url = "https://quote-api.jup.ag/v6//quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
             .to_owned()
             +&"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string()+"&outputMint="
             +&quote_reserve_amount.mint.to_string()+"&amount="
@@ -710,7 +714,7 @@ async fn build_bundles(
             let input_amount = quote0["outAmount"].to_string();
             let input_amount = input_amount[1..input_amount.len()-1].parse::<f64>().unwrap_or_default();
 
-            let url = "http://127.0.0.1:8080/quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
+            let url = "https://quote-api.jup.ag/v6//quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
             .to_owned()
             +&quote_reserve_amount.mint.to_string()+"&outputMint="
             +&base_reserve_amount.mint.to_string()+"&amount="
@@ -738,7 +742,7 @@ async fn build_bundles(
 
             }
 
-            let url = "http://127.0.0.1:8080/quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
+            let url = "https://quote-api.jup.ag/v6//quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
             .to_owned()
             +&base_reserve_amount.mint.to_string()+"&outputMint="
             +&quote_reserve_amount.mint.to_string()+"&amount="
@@ -770,6 +774,8 @@ go = true;
 let mut txs: Vec<VersionedTransaction> = vec![];
 let mut index = 0;
 if go {
+
+    let mut lutties = vec![];
 for swap in vec![quote0, quote, quote2].iter() {
     let mut blockhash = rpc_client
     .get_latest_blockhash_with_commitment(CommitmentConfig {
@@ -777,7 +783,7 @@ for swap in vec![quote0, quote, quote2].iter() {
     })
     .await.unwrap()
     .0;
-  
+    let mut ixs = vec![];
     index += 1;
     if index == 2 {
         txs.append(&mut vec![mempool_tx.clone()]);
@@ -793,7 +799,7 @@ for swap in vec![quote0, quote, quote2].iter() {
         "asLegacyTransaction": false,
         "wrapAndUnwrapSol": false,
     }).to_string());
-    let swap_transaction = reqclient.post("http://127.0.0.1:8080/swap-instructions")
+    let swap_transaction = reqclient.post("https://quote-api.jup.ag/v6//swap-instructions")
     .body(request_body
     ).send().await.unwrap().json::<SwapInstructions>().await;
     if swap_transaction.is_err() {
@@ -802,36 +808,41 @@ for swap in vec![quote0, quote, quote2].iter() {
     }
     let swap_transaction = swap_transaction.unwrap();
 
+    for lut_str in &swap_transaction.address_lookup_table_addresses {
+        let lut = Pubkey::from_str(lut_str).unwrap();
+        let account = rpc_client.get_account(&lut).await.unwrap();
+        let account = solana_sdk::address_lookup_table::state::AddressLookupTable::deserialize(&account.data).unwrap();
+        let lookup_table_address_account = AddressLookupTableAccount {
+            key: lut,
+            addresses: account.addresses.to_vec(),
+        };
+        lutties.push(lookup_table_address_account);
+    }
+    
     if swap_transaction.setup_instructions.is_some() {
 
         let maybe_setup_ixs = swap_transaction.setup_instructions.clone().unwrap().iter().map(|instruction| {
             deserialize_instruction(instruction.clone())
         }).collect::<Vec<Instruction>>();
 
-        txs.push(VersionedTransaction::from(Transaction::new_signed_with_payer(
-            &maybe_setup_ixs,
-            Some(&keypair.pubkey()),
-            &[keypair],
-            blockhash,
-        )));
+        ixs.extend(maybe_setup_ixs);
     }
     let maybe_swap_ix = deserialize_instruction(swap_transaction.swap_instruction.clone());
-    txs.push(VersionedTransaction::from(Transaction::new_signed_with_payer(
-        &[maybe_swap_ix],
-        Some(&keypair.pubkey()),
-        &[keypair],
-        blockhash,
-    )));
+    ixs.extend(vec![maybe_swap_ix]);
     if swap_transaction.cleanup_instruction.is_some() {
         let maybe_cleanup_ix = deserialize_instruction(swap_transaction.cleanup_instruction.clone().unwrap());
-        txs.push(VersionedTransaction::from(Transaction::new_signed_with_payer(
-            &[maybe_cleanup_ix],
-            Some(&keypair.pubkey()),
-            &[keypair],
-            blockhash,
-        )));
+        ixs.extend(vec![maybe_cleanup_ix]);
     }
-
+    
+    txs.append(&mut vec![VersionedTransaction::try_new(
+        VersionedMessage::V0(v0::Message::try_compile(
+            &keypair.pubkey(),
+            &ixs,
+            &lutties,
+            blockhash,
+        ).unwrap()),
+        &[keypair],
+    ).unwrap()]);
 }
 
 let mut blockhash = rpc_client
@@ -852,8 +863,10 @@ let backrun_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
     blockhash,
 ));
 txs.append(&mut vec![backrun_tx]);
+if (txs.len() > 2){
 bundles.append(&mut vec![BundledTransactions {
     txs: txs.clone() }]);
+}
 }
             /*if tokens.contains(&Token { name: base_reserve_amount.mint.to_string() }) {
                 tokens.insert(Token { name: base_reserve_amount.mint.to_string() });
@@ -892,9 +905,9 @@ bundles.append(&mut vec![BundledTransactions {
 
 async fn send_bundles(
     searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
+    rpc_client: &RpcClient, 
     bundles: &[BundledTransactions],
-) -> Result<Vec<result::Result<Response<SendBundleResponse>, Status>>> {
-    let mut futs = Vec::with_capacity(bundles.len());
+) -> Result<()> {
     for b in bundles {
         println!("sending bundle {:?} to searcher", b.txs);
         let mut searcher_client = searcher_client.clone();
@@ -903,15 +916,9 @@ async fn send_bundles(
             .iter()
             .map(|tx| tx.clone().into())
             .collect::<Vec<VersionedTransaction>>();
-        
-        let task =
-            tokio::spawn(async move { send_bundle_no_wait(&txs, &mut searcher_client).await });
-        futs.push(task);
+        send_bundle_with_confirmation(&txs, rpc_client, &mut searcher_client).await.unwrap();
     }
-
-    let responses = futures_util::future::join_all(futs).await;
-    let send_bundle_responses = responses.into_iter().map(|r| r.unwrap()).collect();
-    Ok(send_bundle_responses)
+      Ok(())
 }
 
 fn generate_tip_accounts(tip_program_pubkey: &Pubkey) -> Vec<Pubkey> {
@@ -1223,7 +1230,6 @@ async fn run_searcher_loop(
     let mut leader_schedule: HashMap<Pubkey, HashSet<Slot>> = HashMap::new();
     let mut block_stats: HashMap<Slot, BlockStats> = HashMap::new();
     let mut block_signatures: HashMap<Slot, HashSet<Signature>> = HashMap::new();
-
     let mut searcher_client = get_searcher_client(&block_engine_url, &auth_keypair).await?;
 
     let mut rng = thread_rng();
@@ -1272,27 +1278,8 @@ async fn run_searcher_loop(
                         println!("sending bundles: {:?}", bundles.len());
 
                         let now = Instant::now();
-                        let results = send_bundles(&mut searcher_client, &bundles).await?;
-                        let send_elapsed = now.elapsed().as_micros() as u64;
-                        let send_rt_pp_us = send_elapsed / bundles.len() as u64;
-
-                        match block_stats.entry(highest_slot) {
-                            Entry::Occupied(mut entry) => {
-                                let stats = entry.get_mut();
-                                stats.bundles_sent.extend(bundles.into_iter().zip(results.into_iter()));
-                                stats.send_elapsed += send_elapsed;
-                                let _ = stats.send_rt_per_packet.increment(send_rt_pp_us);
-                            }
-                            Entry::Vacant(entry) => {
-                                let mut send_rt_per_packet = Histogram::new();
-                                let _ = send_rt_per_packet.increment(send_rt_pp_us);
-                                entry.insert(BlockStats {
-                                    bundles_sent: bundles.into_iter().zip(results.into_iter()).collect(),
-                                    send_elapsed,
-                                    send_rt_per_packet
-                                });
-                            }
-                        }
+                        send_bundles(&mut searcher_client, &rpc_client, &bundles).await?;
+                        
                     }
                 }
             }

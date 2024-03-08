@@ -2,6 +2,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use jito_protos::searcher::SubscribeBundleResultsRequest;
 
 use futures_util::StreamExt;
 use jito_protos::{
@@ -90,7 +91,6 @@ pub async fn send_bundle_with_confirmation(
     transactions: &[VersionedTransaction],
     rpc_client: &RpcClient,
     searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
-    bundle_results_subscription: &mut Streaming<BundleResult>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let bundle_signatures: Vec<Signature> =
         transactions.iter().map(|tx| tx.signatures[0]).collect();
@@ -102,13 +102,14 @@ pub async fn send_bundle_with_confirmation(
     info!("Bundle sent. UUID: {:?}", uuid);
 
     info!("Waiting for 5 seconds to hear results...");
-    let mut time_left = 5000;
-    while let Ok(Some(Ok(results))) = timeout(
-        Duration::from_millis(time_left),
-        bundle_results_subscription.next(),
-    )
-    .await
-    {
+    let mut time_left = 35000;
+    let mut stream: Streaming<BundleResult> = searcher_client
+        .subscribe_bundle_results(SubscribeBundleResultsRequest {})
+        .await?
+        .into_inner();
+    while time_left > 0 {
+        let results = timeout(Duration::from_millis(time_left), stream.next()).await?.unwrap().unwrap();
+
         let instant = Instant::now();
         info!("bundle results: {:?}", results);
         match results.result {
@@ -123,29 +124,22 @@ pub async fn send_bundle_with_confirmation(
                         simulated_bid_lamports,
                         msg: _,
                     })) => {
-                        return Err(Box::new(BundleRejectionError::WinningBatchBidRejected(
-                            auction_id,
-                            simulated_bid_lamports,
-                        )))
+                        println!(
+                            "Winning batch bid rejected: {} {}",
+                            auction_id, simulated_bid_lamports);
                     }
                     Some(Reason::StateAuctionBidRejected(StateAuctionBidRejected {
                         auction_id,
                         simulated_bid_lamports,
                         msg: _,
                     })) => {
-                        return Err(Box::new(BundleRejectionError::StateAuctionBidRejected(
-                            auction_id,
-                            simulated_bid_lamports,
-                        )))
+                        println!("State auction bid rejected: {} {}", auction_id, simulated_bid_lamports);
                     }
                     Some(Reason::SimulationFailure(SimulationFailure { tx_signature, msg })) => {
-                        return Err(Box::new(BundleRejectionError::SimulationFailure(
-                            tx_signature,
-                            msg,
-                        )))
+                        println!("Simulation failure: {} {:?}", tx_signature, msg);
                     }
                     Some(Reason::InternalError(InternalError { msg })) => {
-                        return Err(Box::new(BundleRejectionError::InternalError(msg)))
+                        println!("Internal error: {}", msg);
                     }
                     _ => {}
                 };
