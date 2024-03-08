@@ -1,0 +1,18 @@
+[package]
+name = "jito-searcher-client"
+version = "0.1.0"
+edition = "2021"
+description = "Wrapper around the generated gRPC. Adds auth and retry semantics."
+
+[dependencies]
+futures-util = "0.3.28"
+jito-protos = { path = "../jito_protos" }
+log = "0.4"
+prost-types = "0.12"
+solana-client = { path="/home/ubuntu/jito-solana/client" }
+solana-metrics ={ path="/home/ubuntu/jito-solana/metrics" }
+solana-sdk = { path="/home/ubuntu/jito-solana/sdk" }
+solana-transaction-status = { path="/home/ubuntu/jito-solana/transaction-status" }
+thiserror = "1.0.40"
+tokio = "1"
+tonic = "0.10"
