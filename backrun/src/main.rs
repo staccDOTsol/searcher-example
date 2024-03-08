@@ -5,15 +5,11 @@ use amm::raydium::pools::calculate_pool_swap_price;
 //use amm::orca::calculate_swap_price;
 //use amm::orca::legacy_pools::get_legacy_pool;'
 
+use num_traits::ToPrimitive;
 use solana_account_decoder::{UiAccountData, UiAccountEncoding};
 use futures::Future;
 use std::{
-    collections::{hash_map::Entry, HashMap, HashSet},
-    path::PathBuf,
-    result,
-    str::FromStr,
-    sync::Arc,
-    time::{Duration, Instant},
+    borrow::BorrowMut, collections::{hash_map::Entry, HashMap, HashSet}, path::PathBuf, result, str::FromStr, sync::Arc, time::{Duration, Instant}
 };
 use solana_rpc_client_api::{
     bundles::{
@@ -57,6 +53,120 @@ use yellowstone_grpc_proto::geyser::SubscribeUpdateBlock;
 use crate::{amm::raydium::pools::get_raydium_pool, event_loops::{
     block_subscribe_loop, bundle_results_loop, pending_tx_loop, slot_subscribe_loop,
 }};
+use std::collections::{BinaryHeap};
+use std::cmp::Ordering;
+
+// Define a struct for Tokens with a name
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct Token {
+    name: String,
+}
+lazy_static! {
+    static ref FLASHABLE_TOKEN_SET : HashSet<String> = {
+        let flashable_tokens = std::fs::read_to_string("flashableTokens.json").unwrap();
+        let flashable_tokens: Vec<String> = serde_json::from_str(&flashable_tokens).unwrap();
+        flashable_tokens.into_iter().collect::<HashSet<String>>()
+    };
+}
+#[derive(Debug, Clone)]
+struct Edge {
+    to: Token,
+    pool_id: String, // Unique identifier for the AMM liquidity pool
+    base_reserve: u64,
+    quote_reserve: u64,
+    fee_numerator: u64,
+    fee_denominator: u64,
+}
+
+// Define the Graph struct containing a mapping from each token to its outgoing edges
+#[derive(Debug, Clone)]
+struct Graph {
+    edges: HashMap<Token, Vec<Edge>>,
+}
+
+impl Graph {
+    // Constructs a new, empty Graph
+    fn new() -> Self {
+        Graph {
+            edges: HashMap::new(),
+        }
+    }
+
+    // Adds a token to the graph. If the token already exists, this function does nothing.
+    fn add_token(&mut self, token: Token) {
+        self.edges.entry(token).or_insert_with(Vec::new);
+    }
+
+    // Adds an edge from one token to another with the specified liquidity pool information
+    fn add_edge(&mut self, from: Token, to: Token, base_reserve: u64, quote_reserve: u64, fee_numerator: u64, fee_denominator: u64, pool_id: String) {
+        if let Some(edges) = self.edges.get_mut(&from) {
+            edges.push(Edge { to, base_reserve, quote_reserve, fee_numerator, fee_denominator, pool_id });
+        } else {
+            // If the 'from' token doesn't exist yet, add it and then add the edge
+            self.edges.insert(from.clone(), vec![Edge { to, base_reserve, quote_reserve, fee_numerator, fee_denominator, pool_id }]);
+        }
+    }
+}
+
+
+
+// Assuming Token, Edge, and Graph structs are defined as previously discussed
+
+#[derive(Clone, PartialEq)]
+struct NodeProfit {
+    token: Token,
+    profit: f64,
+}
+
+// Implement Eq to satisfy the BinaryHeap requirements
+impl Eq for NodeProfit {}
+
+// Implement Ord to ensure the BinaryHeap orders the profits correctly (max heap)
+impl Ord for NodeProfit {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.profit.partial_cmp(&other.profit).unwrap()
+    }
+}
+
+// Implement PartialOrd to provide the necessary comparison functionality
+impl PartialOrd for NodeProfit {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Graph {
+   async fn find_most_profitable_route(&self, start: Token, rpc_client: &RpcClient) -> HashMap<Token, (Vec<Token>, f64)> {
+        let mut max_profit = HashMap::new();
+        let mut heap = BinaryHeap::new();
+
+        // Start with a profit of 1.0 (no profit or loss)
+        max_profit.insert(start.clone(), (vec![start.clone()], 1.0));
+        heap.push(NodeProfit { token: start.clone(), profit: 1.0 });
+
+        while let Some(NodeProfit { token, profit }) = heap.pop() {
+            if let Some(edges) = self.edges.get(&token) {
+                for edge in edges {
+                    // Dynamically calculate the profit based on the current state of the liquidity pool
+                    let swap_profit = calculate_pool_swap_price(&rpc_client, edge.pool_id.clone(), edge.base_reserve, edge.quote_reserve).await.unwrap();
+                    let next_profit = profit.to_f64().unwrap() * swap_profit.to_f64().unwrap();
+
+                    if next_profit > max_profit.get(&edge.to).map_or(0.0, |&(_, p)| p) {
+                        heap.push(NodeProfit { token: edge.to.clone(), profit: next_profit });
+                        let mut path = max_profit.get(&token).unwrap().0.clone();
+                        path.push(edge.to.clone());
+                        if FLASHABLE_TOKEN_SET.contains(&edge.to.name) {
+                            max_profit.insert(edge.to.clone(), (path, next_profit));
+                        }
+                    }
+                }
+            }
+        }
+
+        max_profit
+    }
+}
+
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -160,6 +270,9 @@ async fn build_bundles(
     tip_accounts: &[Pubkey],
     rng: &mut ThreadRng,
     message: &str,
+    graph: &mut Graph,
+    tokens: &mut HashSet<Token>,
+    seen_pool_ids: &mut HashSet<String>,
 ) -> Vec<BundledTransactions> {
     let mut bundles: Vec<BundledTransactions> = vec![];
     // load raydiumKeys.json, wpKeys.json, raydium_clmmKeys.json
@@ -221,20 +334,50 @@ async fn build_bundles(
             let base_reserve_post = post_execution_accounts[0].clone();
             let quote_reserve_post = post_execution_accounts[1].clone();
             // decode the UiAccountDataBinary
+            let base_reserve_data = &base_reserve.decode::<solana_sdk::account::Account >().unwrap().data;
+            let quote_reserve_data = &quote_reserve.decode::<solana_sdk::account::Account >().unwrap().data;
+            let base_reserve_post_data = &base_reserve_post.decode::<solana_sdk::account::Account >().unwrap().data;
+            let quote_reserve_post_data = &quote_reserve_post.decode::<solana_sdk::account::Account >().unwrap().data;
+            let base_reserve_amount = spl_token::state::Account::unpack(base_reserve_data).unwrap();
+            let quote_reserve_amount = spl_token::state::Account::unpack(quote_reserve_data).unwrap();
+            let base_reserve_post_amount = spl_token::state::Account::unpack(base_reserve_post_data).unwrap();
+            let quote_reserve_post_amount = spl_token::state::Account::unpack(quote_reserve_post_data).unwrap();
             
-            let base_reserve_amount = spl_token_2022::state::Account::unpack(&bincode::serialize(&base_reserve.data).unwrap()).unwrap().amount;
-            let quote_reserve_amount = spl_token_2022::state::Account::unpack(&bincode::serialize(&quote_reserve.data).unwrap()).unwrap().amount;
-            let base_reserve_post_amount = spl_token_2022::state::Account::unpack(&bincode::serialize(&base_reserve_post.data).unwrap()).unwrap().amount;
-            let quote_reserve_post_amount = spl_token_2022::state::Account::unpack(&bincode::serialize(&quote_reserve_post.data).unwrap()).unwrap().amount;
-            
-
-            let swap_price_before = calculate_pool_swap_price(&rpc_client, account_key.to_string(), base_reserve_amount, quote_reserve_amount).await.unwrap();
-            let swap_price_after = calculate_pool_swap_price(&rpc_client, account_key.to_string(), base_reserve_post_amount, quote_reserve_post_amount).await.unwrap();
+            let swap_price_before = calculate_pool_swap_price(&rpc_client, account_key.to_string(), base_reserve_amount.amount, quote_reserve_amount.amount).await.unwrap();
+            let swap_price_after = calculate_pool_swap_price(&rpc_client, account_key.to_string(), base_reserve_post_amount.amount, quote_reserve_post_amount.amount).await.unwrap();
             let swap_price = swap_price_before / swap_price_after;
             println !("swap price before  {:?}, after  {:?}, delta {:?}", swap_price_before, swap_price_after, swap_price);
-            
+            if tokens.contains(&Token { name: base_reserve_amount.mint.to_string() }) {
+                tokens.insert(Token { name: base_reserve_amount.mint.to_string() });
+            }
+            if tokens.contains(&Token { name: quote_reserve_amount.mint.to_string() }) {
+                tokens.insert(Token { name: quote_reserve_amount.mint.to_string() });
+            }
+            graph.add_token(Token { name: base_reserve_amount.mint.to_string() });
+            graph.add_token(Token { name: quote_reserve_amount.mint.to_string() });
+            graph.add_edge(Token { name: base_reserve_amount.mint.to_string() }, Token { name: quote_reserve_amount.mint.to_string() }, base_reserve_post_amount.amount, quote_reserve_post_amount.amount, 30, 10000, account_key.to_string());
+            graph.add_edge(Token { name: quote_reserve_amount.mint.to_string() }, Token { name: base_reserve_amount.mint.to_string() }, quote_reserve_post_amount.amount, base_reserve_post_amount.amount, 30, 10000, account_key.to_string());
+
+            let mut max_profit = 0.0;
+            let mut max_profitable_route = vec![];
+            for token in FLASHABLE_TOKEN_SET.iter() {
+                let most_profitable_route = graph.find_most_profitable_route(Token { name: token.to_string() }, rpc_client).await;
+
+                println!("most_profitable_route: {:?}", most_profitable_route);
+                for (token, (route, profit)) in most_profitable_route {
+                    if profit > max_profit {
+                        max_profit = profit;
+                        max_profitable_route = route;
+                    }
+
+                }
+                println!("max_profitable_route: {:?}, profit: {:?}", max_profitable_route, max_profit);
+            }
+
         }
+
     }
+        
             let tip_account = tip_accounts[rng.gen_range(0..tip_accounts.len())];
 
             let backrun_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
@@ -306,7 +449,7 @@ async fn maintenance_tick(
 ) -> Result<()> {
     *blockhash = rpc_client
         .get_latest_blockhash_with_commitment(CommitmentConfig {
-            commitment: CommitmentLevel::Confirmed,
+            commitment: CommitmentLevel::Finalized,
         })
         .await?
         .0;
@@ -587,6 +730,9 @@ async fn run_searcher_loop(
     mut block_receiver: Receiver<SubscribeUpdateBlock>,
     mut bundle_results_receiver: Receiver<BundleResult>,
     mut pending_tx_receiver: Receiver<PendingTxNotification>,
+    graph: &mut Graph,
+    tokens: &mut HashSet<Token>,
+    seen_pool_ids: &mut HashSet<String>,
 ) -> Result<()> {
     let mut leader_schedule: HashMap<Pubkey, HashSet<Slot>> = HashMap::new();
     let mut block_stats: HashMap<Slot, BlockStats> = HashMap::new();
@@ -602,7 +748,7 @@ async fn run_searcher_loop(
     let rpc_client = RpcClient::new(rpc_url);
     let mut blockhash = rpc_client
         .get_latest_blockhash_with_commitment(CommitmentConfig {
-            commitment: CommitmentLevel::Confirmed,
+            commitment: CommitmentLevel::Finalized,
         })
         .await?
         .0;
@@ -625,7 +771,7 @@ async fn run_searcher_loop(
                 // it might be ideal to wait until the leader slot is up
                 if is_leader_slot {
                     let pending_tx_notification = maybe_pending_tx_notification.ok_or(BackrunError::Shutdown)?;
-                    let bundles = build_bundles(&rpc_client, pending_tx_notification, keypair, &blockhash, &tip_accounts, &mut rng, &message).await;
+                    let bundles = build_bundles(&rpc_client, pending_tx_notification, keypair, &blockhash, &tip_accounts, &mut rng, &message,  graph,  tokens,  seen_pool_ids).await;
                     if !bundles.is_empty() {
                         /*let now = Instant::now();
                         let results = send_bundles(&mut searcher_client, &bundles).await?;
@@ -672,7 +818,9 @@ fn main() -> Result<()> {
 
     let payer_keypair = Arc::new(read_keypair_file(&args.payer_keypair).expect("parse kp file"));
     let auth_keypair = Arc::new(read_keypair_file(&args.auth_keypair).expect("parse kp file"));
-
+    let mut graph = Graph::new();
+    let mut tokens = HashSet::new();
+    let mut seen_pool_ids = HashSet::new();
     set_host_id(auth_keypair.pubkey().to_string());
 
     let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
@@ -712,6 +860,9 @@ fn main() -> Result<()> {
             block_receiver,
             bundle_results_receiver,
             pending_tx_receiver,
+            &mut graph,
+            &mut tokens,
+            &mut seen_pool_ids,
         )
         .await;
         error!("searcher loop exited result: {result:?}");

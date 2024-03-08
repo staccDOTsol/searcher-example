@@ -10,10 +10,10 @@ jito-protos = { path = "../jito_protos" }
 lazy_static.workspace = true
 log = "0.4"
 prost-types = "0.12"
-solana-client = { path="/Users/jd/jito-solana/client" }
-solana-metrics ={ path="/Users/jd/jito-solana/metrics" }
-solana-sdk = { path="/Users/jd/jito-solana/sdk" }
-solana-transaction-status = { path="/Users/jd/jito-solana/transaction-status" }
+solana-client = { path="/home/stacc/jito-solana/client" }
+solana-metrics ={ path="/home/stacc/jito-solana/metrics" }
+solana-sdk = { path="/home/stacc/jito-solana/sdk" }
+solana-transaction-status = { path="/home/stacc/jito-solana/transaction-status" }
 thiserror = "1.0.40"
 tokio = "1"
 tonic = "0.10"

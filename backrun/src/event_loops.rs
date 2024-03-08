@@ -129,7 +129,10 @@ pub async fn pending_tx_loop(
             Ok(mut searcher_client) => {
                 match searcher_client
                     .subscribe_mempool(MempoolSubscription {
-                        regions: vec!["ny".to_string()],
+                        regions: vec!["ny".to_string(),
+                        "amsterdam".to_string(),
+                        "tokyo".to_string(),
+                        "frankfurt".to_string()],
                         msg: Some(mempool_subscription::Msg::ProgramV0Sub(
                             jito_protos::searcher::ProgramSubscriptionV0 { programs: backrun_pubkeys.iter().map(|pk| pk.to_string()).collect(),
                             },

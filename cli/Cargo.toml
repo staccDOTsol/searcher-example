@@ -17,10 +17,10 @@ prost-types = "0.12"
 rand = "0.8.5"
 jito-searcher-client = { path = "../searcher_client" }
 
-solana-client = { path="/Users/jd/jito-solana/client" }
-solana-metrics ={ path="/Users/jd/jito-solana/metrics" }
-solana-sdk = { path="/Users/jd/jito-solana/sdk" }
-solana-transaction-status = { path="/Users/jd/jito-solana/transaction-status" }
+solana-client = { path="/home/stacc/jito-solana/client" }
+solana-metrics ={ path="/home/stacc/jito-solana/metrics" }
+solana-sdk = { path="/home/stacc/jito-solana/sdk" }
+solana-transaction-status = { path="/home/stacc/jito-solana/transaction-status" }
 spl-memo = "3.0.1"
 thiserror = "1.0.40"
 tokio = { version = "1", features = ["rt-multi-thread"] }
