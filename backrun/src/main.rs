@@ -625,7 +625,7 @@ async fn build_bundles(
                 if swap_price.to_f64().unwrap() > 1.0 {
 
                     // buy quote, sell base 
-                let url = "https://quote-api.jup.ag/v6//quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
+                let url = "http://127.0.0.1:8080/quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
                 .to_owned()
                 +&"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string()+"&outputMint="
                 +&base_reserve_amount.mint.to_string()+"&amount="
@@ -636,7 +636,7 @@ async fn build_bundles(
                 let input_amount = quote0["outAmount"].to_string();
                 let input_amount = input_amount[1..input_amount.len()-1].parse::<f64>().unwrap_or_default();
 
-                let url = "https://quote-api.jup.ag/v6//quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
+                let url = "http://127.0.0.1:8080/quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
                 .to_owned()
                 +&base_reserve_amount.mint.to_string()+"&outputMint="
                 +&quote_reserve_amount.mint.to_string()+"&amount="
@@ -667,7 +667,7 @@ async fn build_bundles(
                     println!("Filtered Route Plan: {:?}", filtered_route_plan);
 
 
-                let url = "https://quote-api.jup.ag/v6//quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
+                let url = "http://127.0.0.1:8080/quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
                 .to_owned()
                 +&quote_reserve_amount.mint.to_string()+"&outputMint="
                 +&base_reserve_amount.mint.to_string()+"&amount="
@@ -703,7 +703,7 @@ async fn build_bundles(
         }
         else {
             // sell quote, buy base
-            let url = "https://quote-api.jup.ag/v6//quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
+            let url = "http://127.0.0.1:8080/quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
             .to_owned()
             +&"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string()+"&outputMint="
             +&quote_reserve_amount.mint.to_string()+"&amount="
@@ -714,7 +714,7 @@ async fn build_bundles(
             let input_amount = quote0["outAmount"].to_string();
             let input_amount = input_amount[1..input_amount.len()-1].parse::<f64>().unwrap_or_default();
 
-            let url = "https://quote-api.jup.ag/v6//quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
+            let url = "http://127.0.0.1:8080/quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
             .to_owned()
             +&quote_reserve_amount.mint.to_string()+"&outputMint="
             +&base_reserve_amount.mint.to_string()+"&amount="
@@ -742,7 +742,7 @@ async fn build_bundles(
 
             }
 
-            let url = "https://quote-api.jup.ag/v6//quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
+            let url = "http://127.0.0.1:8080/quote?slippageBps=9999&asLegacyTransaction=false&inputMint="
             .to_owned()
             +&base_reserve_amount.mint.to_string()+"&outputMint="
             +&quote_reserve_amount.mint.to_string()+"&amount="
@@ -799,7 +799,7 @@ for swap in vec![quote0, quote, quote2].iter() {
         "asLegacyTransaction": false,
         "wrapAndUnwrapSol": false,
     }).to_string());
-    let swap_transaction = reqclient.post("https://quote-api.jup.ag/v6//swap-instructions")
+    let swap_transaction = reqclient.post("http://127.0.0.1:8080/swap-instructions")
     .body(request_body
     ).send().await.unwrap().json::<SwapInstructions>().await;
     if swap_transaction.is_err() {
